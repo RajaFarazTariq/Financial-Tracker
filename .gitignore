@@ -1,0 +1,46 @@
+# ---- Secrets / local credentials (NEVER commit) ----
+.env
+.env.*
+!.env.example
+!.env.local.example
+Superuser.txt
+*.pem
+*.key
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+env/
+venv/
+.venv/
+
+# ---- Django ----
+db.sqlite3
+db.sqlite3-journal
+*.sqlite3
+staticfiles/
+media/
+celerybeat-schedule*
+celerybeat.pid
+
+# ---- Node / Next.js ----
+node_modules/
+.next/
+out/
+build/
+next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ---- Editors / OS / tooling ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+.claude/
