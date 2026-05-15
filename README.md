@@ -1,10 +1,31 @@
 # Financial Tracker
 
-A premium personal-finance dashboard with multi-account ledgering, budget tracking,
-goal management, recurring bills, and Claude-powered spending insights.
+A personal-finance dashboard with **real-time bank sync** (Plaid), **bank email-alert
+ingestion** (UBL/IMAP), AI-powered insights (Claude), and a **live, signal-driven
+balance** — all in Pakistani Rupee (Rs.).
 
-Hybrid stack — Django REST API + Next.js frontend. JWT auth, no Prisma (Django owns
-the schema).
+Hybrid stack: **Django REST API + Next.js frontend**, JWT auth. Django owns the
+schema (no Prisma).
+
+---
+
+## Highlights
+
+- **Real-time bank sync (Plaid)** — Link an institution, auto-import accounts &
+  transactions via `/transactions/sync`, signature-verified webhook → Celery
+  background sync, manual + scheduled fallback.
+- **Bank email-alert ingestion** — Polls a mailbox over IMAP for transaction-alert
+  emails (tuned for UBL), parses amount/direction/date/merchant, auto-categorizes,
+  and creates transactions. Celery Beat near-real-time poll + manual scan.
+- **Live balance** — Every transaction create/edit/delete adjusts the account
+  balance instantly via Django signals (Plaid accounts excluded — their balance is
+  authoritative from the bank).
+- **Single currency: PKR** — Formatted as `Rs. 1,234` everywhere (cards, charts,
+  tooltips, AI insights).
+- **AI Insights** — Claude analyzes the last 60 days via forced tool use; graceful
+  static fallback without an API key.
+- Accounts, transactions, budgets, goals, bills, dashboard (trend chart, spending
+  donut, financial-health gauge), JWT auth with rotating refresh.
 
 ---
 
@@ -12,17 +33,15 @@ the schema).
 
 | Layer | Choice |
 |---|---|
-| Backend | Django 5.2 · DRF 3.15 · SimpleJWT · django-environ · drf-spectacular |
+| Backend | Django 5.2 · DRF · SimpleJWT · django-environ · drf-spectacular |
+| Bank sync | plaid-python · PyJWT (webhook ES256 verify) · cryptography (token encryption) |
+| Background | Celery · Redis (broker/result) · Celery Beat |
+| Email ingest | stdlib `imaplib` + tolerant regex parser + rule-based categorizer |
 | Database | SQLite locally · Postgres-ready via `DATABASE_URL` |
-| Auth | JWT (rotating refresh, blacklist after rotation) |
-| AI | Anthropic SDK (Claude Opus 4.7 by default, prompt caching enabled) |
-| Frontend framework | Next.js 15 (App Router, React 19) · TypeScript |
-| Styling | Tailwind v4 · shadcn-style primitives · custom HSL token system (light/dark) |
-| State | Zustand (auth + sidebar) with persist · TanStack Query 5 |
-| Charts | Recharts (code-split, lazy-loaded) |
-| Animations | Framer Motion |
-| Forms | react-hook-form + Zod |
-| Notifications | sonner |
+| AI | Anthropic SDK (Claude Opus 4.7 default, prompt caching) |
+| Frontend | Next.js 15 (App Router, React 19) · TypeScript · Tailwind v4 |
+| Data/State | TanStack Query 5 (auto-refetch) · Zustand · react-plaid-link |
+| Charts/Forms | Recharts (lazy) · react-hook-form + Zod · sonner |
 
 ---
 
@@ -30,286 +49,156 @@ the schema).
 
 ```
 Financial Tracker/
-├── FinancialTracker/             # Django backend
-│   ├── accounts/                 # Models: Account, Category, Transaction, Goal, Bill, Budget
-│   ├── api/                      # DRF — serializers, viewsets, JWT, dashboard, insights
-│   ├── FinancialTracker/         # Settings, urls, wsgi
-│   ├── requirements.txt
-│   ├── .env.example              # Copy → .env, fill in secrets
-│   └── db.sqlite3                # Local dev DB
-│
-├── frontend/                     # Next.js frontend
-│   ├── src/app/
-│   │   ├── (auth)/               # sign-in, sign-up
-│   │   ├── (app)/                # auth-guarded app shell
-│   │   │   ├── dashboard/
-│   │   │   ├── accounts/  transactions/  income/  expenses/
-│   │   │   ├── budgets/  goals/  bills/
-│   │   │   ├── insights/  settings/
-│   │   │   ├── layout.tsx        # Sidebar + topbar + AuthGuard
-│   │   │   └── loading.tsx       # Route-transition skeleton
-│   │   └── page.tsx              # Landing
-│   ├── src/components/
-│   │   ├── ui/                   # shadcn-style primitives
-│   │   ├── layout/               # Sidebar, Topbar
-│   │   ├── dashboard/            # StatCard, TrendChart, SpendingPie, HealthCard, lists
-│   │   └── transactions/         # TransactionDialog, TransactionsView (shared)
-│   ├── src/lib/                  # api client, types, utils
-│   ├── src/stores/               # Zustand: auth, sidebar
-│   ├── src/hooks/                # use-auth, use-resources
-│   └── .env.local.example
-│
-└── README.md                     # This file
+├── FinancialTracker/                 # Django backend
+│   ├── accounts/                     # Models, signals (live balance), mgmt commands
+│   │   └── management/commands/      # sync_plaid, scan_email
+│   ├── api/                          # DRF: views, serializers, urls
+│   │   ├── plaid_client.py / plaid_sync.py / plaid_webhook.py
+│   │   ├── email_ingest.py / bank_email_parser.py / email_categorize.py
+│   │   ├── tasks.py                  # Celery tasks (sync + scan)
+│   │   └── insights.py               # Claude insights
+│   ├── FinancialTracker/             # settings, urls, celery app
+│   └── .env.example                  # copy → .env
+├── frontend/                         # Next.js frontend
+│   └── src/{app,components,hooks,lib,stores}
+└── README.md
 ```
 
----
-
-## Features
-
-### Accounts & money flow
-- Multi-account ledger: cash, checking, savings, credit, investment
-- Per-account currency (USD, EUR, GBP, JPY, INR, PKR, AUD, CAD)
-- Transactions: income / expense, optional category, notes, editable date, recurring flag
-- Filterable transactions table with search, type, account filters + pagination
-- Dedicated `/income` and `/expenses` views (pre-filtered)
-
-### Planning
-- **Budgets** — monthly caps per category (or an overall cap). Live computation of
-  spent / remaining / progress / over-budget from this month's expenses.
-- **Goals** — savings targets with target dates, animated progress bars with milestone
-  dots, status chips (Starting / Building / On track / Almost there / Completed).
-- **Upcoming Bills** — urgency badges (Overdue / Urgent / Soon / OK), mark-paid toggle,
-  Upcoming / Paid / All tabs.
-
-### Dashboard
-- 4 themed stat cards (blue / green / red / purple)
-- Income vs. Expenses area chart with smooth curves, gradient fills, custom tooltip
-  showing Income / Expenses / Net per month, hover indicators
-- **Financial Health** — animated SVG radial progress with color-coded status badge
-  (Excellent / Good / Fair / Needs attention)
-- **Spending breakdown** — modern donut with hover scaling, radial gradient fills,
-  per-category mini-progress bars in the legend
-- Sectioned cards: Upcoming Bills, Active Goals, Recent Transactions
-
-### AI Insights (`/insights`)
-- One-click "Generate insights" calls Claude with the user's last 60 days of activity
-- Returns structured JSON via forced tool use (`report_insights`):
-  summary · health assessment · 3–5 observations · 2–4 recommendations
-- Prompt caching enabled on the static system prompt
-- Graceful fallback when `ANTHROPIC_API_KEY` is empty
-
-### Settings
-- Profile edit (first name, last name, email)
-- Password change with Django password validators
-- Theme picker (Light / Dark / System)
-
-### Auth
-- JWT (access 15 min · refresh 7 days, rotating)
-- Auto-refresh interceptor with single-flight protection
-- Auth-guarded route group with Zustand-persisted tokens
-- localStorage hydration handled correctly (no flash-of-signed-out)
-
-### Sidebar
-- Featured Dashboard card (gradient-blue, always-on highlight)
-- Expandable parent groups (Money flow, Planning) with accordion behavior
-- Distinct color themes: parent groups use primary (blue/indigo), sub-items use
-  accent (purple)
-- Pinned ↔ collapsed-rail modes (click logo to toggle, persists across reloads)
-- Hover-prefetch on every Link — pre-warms route chunks for instant navigation
+> Not committed (see `.gitignore`): `.env`, `db.sqlite3`, `Superuser.txt`,
+> `env/`, `node_modules/`, `frontend/.env.local`.
 
 ---
 
-## Setup
+## Quick start
 
 ### Prerequisites
+- Python 3.11+ (3.14 tested), Node.js 18.18+
+- Redis (only needed for background/real-time sync — optional in dev, see below)
 
-- **Python 3.11+** (3.14 tested) for the backend
-- **Node.js 18.18+** for the frontend (check with `node --version`)
-- A clone of this repo with the existing `env/` virtualenv intact, OR a fresh
-  venv you'll create yourself
-
-### 1. Backend — Django API
+### 1. Backend (Django API)
 
 ```powershell
-cd "FinancialTracker"
-
-# Activate the venv (already present in env/)
-..\env\Scripts\Activate.ps1
-
-# Install/update Python deps
-pip install -r requirements.txt
-
-# Configure environment (one-time)
-copy .env.example .env
-# Open .env and fill in:
-#   - DJANGO_SECRET_KEY  (generate via the snippet below)
-#   - EMAIL_HOST_USER + EMAIL_HOST_PASSWORD if you want signup verification
-#   - ANTHROPIC_API_KEY  (optional — enables live AI Insights)
-python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
-
-# Apply migrations
+cd FinancialTracker
+python -m venv ..\env ; ..\env\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+copy .env.example .env          # then fill in the values (see table below)
 python manage.py migrate
-
-# Optional: create a Django admin superuser
-python manage.py createsuperuser
-
-# Run
-python manage.py runserver
+python manage.py createsuperuser   # optional
+python manage.py runserver 8000
 ```
+API → `http://localhost:8000/api/` · Docs → `http://localhost:8000/api/docs/`
 
-API: `http://localhost:8000/api/` · Interactive docs: `http://localhost:8000/api/docs/`
-
-### 2. Frontend — Next.js
+### 2. Frontend (Next.js)
 
 ```powershell
-cd "frontend"
-
-# Configure environment
+cd frontend
 copy .env.local.example .env.local
-# Default NEXT_PUBLIC_API_URL=http://localhost:8000 is correct if Django runs on :8000
-
-# Install deps (~400 MB, 1–3 min first time)
 npm install
-
-# Dev with hot reload
-npm run dev
+npm run dev                     # NOT "npm run start" — that serves a stale build
 ```
+App → `http://localhost:3000`
 
-App: `http://localhost:3000`
+### 3. Background sync (Celery — for real-time/automatic imports)
 
-### 3. Production build (recommended for performance testing)
+Two extra terminals (Windows needs `--pool=solo`):
 
 ```powershell
-cd "frontend"
-npm run build
-npm run start
+celery -A FinancialTracker worker --pool=solo -l info
+celery -A FinancialTracker beat -l info
 ```
 
-In production mode, every Link prefetches automatically and chunks are pre-built —
-navigation is near-instant. Dev mode compiles routes on-demand which can take 2–5 s
-on first visit to a route.
+Dev shortcut without Redis/workers: set `CELERY_TASK_ALWAYS_EAGER=true` in `.env`
+and use the in-app **Sync** / **Scan** buttons (they run inline). The
+`sync_plaid` / `scan_email` management commands are an OS-scheduler fallback.
+
+### 4. Plaid webhooks (optional — true real-time)
+
+Plaid posts webhooks to a public HTTPS URL. In dev, tunnel with ngrok and set
+`PLAID_WEBHOOK_URL`:
+
+```powershell
+ngrok http --url=<your-static-domain> 8000
+# .env: PLAID_WEBHOOK_URL=https://<your-domain>/api/plaid/webhook/
+```
+
+**Running everything = 3–4 terminals:** Django `:8000` · `npm run dev` ·
+Celery worker (+ beat) · optional ngrok.
+
+---
+
+## Bank connections
+
+- **Plaid** — get Sandbox keys at <https://dashboard.plaid.com/developers/keys>,
+  set `PLAID_CLIENT_ID` / `PLAID_SECRET`. In the app: **Accounts → Connect bank**.
+  Sandbox test login: `user_good` / `pass_good`. (Plaid does **not** support
+  Pakistani banks — use it for US/UK/EU or Sandbox.)
+- **UBL email alerts** — enable UBL transaction email alerts, generate a Gmail
+  **App Password**, then **Accounts → Connect email alerts**. Alerts from
+  `admin.ebanking@ubl.com.pk` are parsed and imported automatically.
 
 ---
 
 ## API quick reference
 
-All endpoints under `/api/`. Auth via `Authorization: Bearer <access_token>`.
+All under `/api/`. Auth: `Authorization: Bearer <access_token>`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/auth/register/` | Create a user |
-| POST | `/auth/login/` | Obtain JWT pair (access + refresh) |
-| POST | `/auth/refresh/` | Rotate JWT pair |
-| POST | `/auth/verify/` | Verify access token |
-| GET / PATCH | `/auth/me/` | Current user profile |
-| POST | `/auth/password/` | Change password (`old_password`, `new_password`) |
-| GET | `/dashboard/` | Aggregated dashboard payload |
-| POST | `/insights/` | Claude-powered insights for the current user |
-| CRUD | `/accounts/` | Bank/cash/credit/investment accounts |
-| CRUD | `/categories/` | Income/expense categories |
-| CRUD | `/transactions/` | Transactions (filters: `type`, `account`, `category`, `is_recurring`, `search`) |
-| CRUD | `/goals/` | Savings goals |
-| CRUD | `/bills/` | Recurring bills |
-| CRUD | `/budgets/` | Monthly per-category (or overall) spending caps |
+| POST | `/auth/register/` `/auth/login/` `/auth/refresh/` | Auth + JWT |
+| GET/PATCH | `/auth/me/` · POST `/auth/password/` | Profile / password |
+| GET | `/dashboard/` · POST `/insights/` | Aggregates · Claude insights |
+| CRUD | `/accounts/` `/transactions/` `/categories/` | Core ledger |
+| CRUD | `/budgets/` `/goals/` `/bills/` | Planning |
+| POST | `/plaid/link-token/` `/plaid/exchange/` | Plaid Link flow |
+| GET/DELETE/POST | `/plaid/items/` · `/plaid/items/{id}/sync/` | Linked banks |
+| POST | `/plaid/webhook/` | Plaid webhook (verified, no auth) |
+| CRUD | `/email/inboxes/` · `/email/inboxes/{id}/scan/` `/test/` | Email-alert inboxes |
 
-Pagination: `?page=N` (page size 25). Ordering: `?ordering=-date`. Search: `?search=...`.
-Full OpenAPI schema at `/api/schema/`, Swagger UI at `/api/docs/`.
+Pagination `?page=N` (25) · ordering `?ordering=-date` · search `?search=`.
+OpenAPI: `/api/schema/`, Swagger: `/api/docs/`.
 
 ---
 
-## Environment variables
-
-### Backend (`FinancialTracker/.env`)
+## Environment variables (`FinancialTracker/.env`)
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DJANGO_SECRET_KEY` | dev fallback | **Required for prod** — generate via `get_random_secret_key()` |
-| `DJANGO_DEBUG` | `False` | Set `True` for local dev |
-| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated origins |
-| `CSRF_TRUSTED_ORIGINS` | `http://localhost:3000` | Comma-separated origins |
-| `DATABASE_URL` | empty → SQLite | Set to `postgres://user:pw@host:5432/db` for Postgres |
-| `EMAIL_HOST` | `smtp.gmail.com` | |
-| `EMAIL_HOST_USER` | empty | SMTP login |
-| `EMAIL_HOST_PASSWORD` | empty | **App password, not your real password** |
-| `FRONTEND_URL` | `http://localhost:3000` | Used in verification email links |
-| `ACCESS_TOKEN_LIFETIME_MIN` | `15` | JWT access lifetime |
-| `REFRESH_TOKEN_LIFETIME_DAYS` | `7` | JWT refresh lifetime |
-| `ANTHROPIC_API_KEY` | empty | If empty, `/api/insights/` returns a static fallback |
-| `ANTHROPIC_MODEL` | `claude-opus-4-7` | Try `claude-sonnet-4-6` for ~10× cheaper insights |
+| `DJANGO_SECRET_KEY` | dev fallback | **Set in prod**; also keys token encryption fallback |
+| `DJANGO_DEBUG` | `False` | `True` for local dev |
+| `DJANGO_ALLOWED_HOSTS` / `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` | localhost | Comma-separated |
+| `DATABASE_URL` | SQLite | `postgres://…` for Postgres |
+| `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` | empty | SMTP (Gmail App Password) |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | empty / `claude-opus-4-7` | Empty → static insights |
+| `PLAID_CLIENT_ID` / `PLAID_SECRET` | empty | From Plaid dashboard |
+| `PLAID_ENV` | `sandbox` | `sandbox` \| `production` |
+| `PLAID_COUNTRY_CODES` | `US` | Comma-separated ISO codes |
+| `PLAID_WEBHOOK_URL` | empty | Public HTTPS `/api/plaid/webhook/` |
+| `PLAID_TOKEN_KEY` | derived from SECRET_KEY | **Set a dedicated key in prod** |
+| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | redis://localhost:6379 | |
+| `CELERY_TASK_ALWAYS_EAGER` | `False` | `true` → run tasks inline (no Redis) |
+| `EMAIL_INGEST_POLL_SECONDS` | `60` | Celery Beat scan interval |
 
-### Frontend (`frontend/.env.local`)
-
-| Variable | Default | Notes |
-|---|---|---|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | Backend origin |
-| `NEXT_PUBLIC_APP_NAME` | `Financial Tracker` | Optional brand override |
+Frontend (`frontend/.env.local`): `NEXT_PUBLIC_API_URL=http://localhost:8000`.
 
 ---
 
-## Performance notes
+## Notes
 
-- **Lazy-loaded Recharts** — `TrendChart` and `SpendingPie` are imported via
-  `next/dynamic` with SSR off + Skeleton fallback. Recharts (~80 KB gzipped) doesn't
-  ship in the initial bundle.
-- **Memoized sidebar** — `FeaturedCard`, `LinkCard`, `GroupCard`, `CollapsedIcon` are
-  all `React.memo`-wrapped. Stable `useCallback` handlers prevent unnecessary
-  re-renders when toggling groups or hovering.
-- **CSS-only hover lift** — `StatCard` uses `hover:-translate-y-1` instead of Framer
-  Motion `whileHover` — runs on the compositor, zero React work.
-- **Hover prefetch** — every sidebar Link warms its destination chunk via
-  `router.prefetch()` on mouse enter / focus.
-- **Memoized dashboard widgets** — `HealthCard`, `BillsList`, `GoalsList`,
-  `TransactionsList`, `StatCard` all memoized.
-- **Tight transitions** — replaced `transition-all` with specific properties
-  (`transition-[background-color,border-color,color,box-shadow]`) on hot paths.
+- **Currency** is globally PKR (`Rs.`). `formatCurrency` ignores its currency arg by
+  design — the app is single-currency.
+- **Live balance**: `accounts/signals.py` maintains `Account.balance` from
+  transaction deltas. Plaid-linked accounts are intentionally excluded.
+- The UBL email parser is tolerant/best-effort; low-confidence parses are saved
+  flagged (`pending=True`) for review rather than dropped.
 
----
+## Security checklist (before deploying)
 
-## Common issues
-
-**Production build fails with "Could not find a production build"**
-Run `npm run build` before `npm run start`.
-
-**`pip` command silently fails on Windows**
-Use `python -m pip install ...` instead of `pip ...`. Some shell configurations
-don't expose the venv's `pip.exe` correctly even when activated.
-
-**Sidebar groups feel laggy on first click**
-That's Next.js dev-mode compiling the destination route. The hover-prefetch fix
-warms the chunk before you click. For real performance testing, run
-`npm run build && npm run start`.
-
-**CORS error in the browser console**
-Confirm `CORS_ALLOWED_ORIGINS` in `FinancialTracker/.env` includes the exact origin
-(scheme + host + port) your frontend runs at, then restart Django.
-
-**AI Insights returns "Static fallback" badge**
-Either `ANTHROPIC_API_KEY` is empty in `.env`, or Django wasn't restarted after you
-added the key. Stop Django and `python manage.py runserver` again.
-
-**Tokens missing on hard refresh, redirected to /sign-in**
-The Zustand auth store rehydrates from localStorage on mount. If tokens have
-expired (>7 days), this is expected behavior.
-
----
-
-## Security checklist before deploying
-
-- [ ] Rotate any credentials that were ever committed to git history
-- [ ] Set `DJANGO_DEBUG=False` and a strong `DJANGO_SECRET_KEY`
-- [ ] Fill `DJANGO_ALLOWED_HOSTS` with your real domain
-- [ ] Switch `DATABASE_URL` to managed Postgres
-- [ ] Set up HTTPS — `SECURE_SSL_REDIRECT` and `HSTS` headers activate automatically
-      when `DEBUG=False`
-- [ ] Run `python manage.py check --deploy`
-- [ ] Configure SMTP with a dedicated app password
-- [ ] Restrict `CORS_ALLOWED_ORIGINS` to your production frontend domain only
-- [ ] If using AI Insights in production, rate-limit the endpoint
-      (DRF's `UserRateThrottle` is already enabled at 240/min — consider stricter)
-
----
+- [ ] Never commit `.env`, `db.sqlite3`, or credentials (already in `.gitignore`)
+- [ ] Rotate any secret exposed during setup (Plaid secret, Gmail App Password, API keys)
+- [ ] `DJANGO_DEBUG=False`, strong `DJANGO_SECRET_KEY`, dedicated `PLAID_TOKEN_KEY`
+- [ ] Real `DJANGO_ALLOWED_HOSTS`, restricted `CORS_ALLOWED_ORIGINS`, managed Postgres
+- [ ] `python manage.py check --deploy`
 
 ## License
 
-Personal project. Use however you like.
+Personal project — use however you like.
