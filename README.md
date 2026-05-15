@@ -7,6 +7,8 @@ balance** — all in Pakistani Rupee (Rs.).
 Hybrid stack: **Django REST API + Next.js frontend**, JWT auth. Django owns the
 schema (no Prisma).
 
+![Financial Tracker dashboard](docs/screenshots/dashboard.png)
+
 ---
 
 ## Highlights
@@ -26,6 +28,22 @@ schema (no Prisma).
   static fallback without an API key.
 - Accounts, transactions, budgets, goals, bills, dashboard (trend chart, spending
   donut, financial-health gauge), JWT auth with rotating refresh.
+
+---
+
+## Screenshots
+
+**Dashboard overview** — stat cards, income-vs-expenses trend, financial-health gauge
+
+![Dashboard overview](docs/screenshots/dashboard-overview.png)
+
+| Accounts — Plaid linked banks + synced cards | Transactions |
+|---|---|
+| ![Accounts](docs/screenshots/accounts.png) | ![Transactions](docs/screenshots/transactions.png) |
+
+| AI Insights (Claude) | Sidebar |
+|---|---|
+| ![AI Insights](docs/screenshots/ai-insights.png) | <img src="docs/screenshots/sidebar.png" alt="Sidebar" width="220"> |
 
 ---
 
