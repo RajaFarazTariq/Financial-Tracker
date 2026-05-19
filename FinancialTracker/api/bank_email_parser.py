@@ -72,6 +72,17 @@ _UBL_DESC_RE = re.compile(
 _UBL_TYPE_RE = re.compile(
     r"\bA\s+([A-Za-z ]+?)\s+(debit|credit)\s+transaction\b", re.IGNORECASE
 )
+# UBL sends TWO emails per Raast transfer: the structured "...Transaction Alert"
+# above AND a redundant "netbanking" courtesy notice ("You paid/received PKR X
+# to NAME via Raast. Here are the details: ... Transaction ID: ..."). They have
+# different Message-IDs, so we must drop the notice here or every transfer is
+# counted twice. The notice is the only style that pairs "here are the details"
+# with a "Transaction ID:" — the structured alert uses "Transaction description"
+# / "Instrument number" / "MSGID" instead.
+_UBL_DUP_NOTICE_RE = re.compile(
+    r"here\s+are\s+the\s+details\b.*?\btransaction\s+id\s*[:\-]",
+    re.IGNORECASE | re.DOTALL,
+)
 _DESC_LABELS = ("description", "narration", "details", "merchant", "remarks",
                 "particulars", "transaction detail", "info")
 _DATE_FORMATS = (
@@ -132,6 +143,10 @@ def parse_alert(subject: str, body: str) -> ParsedAlert | None:
     """Return a ParsedAlert, or None if the email is not a transaction alert."""
     text = strip_html(body) if "<" in body and ">" in body else body
     text = re.sub(r"\s+", " ", f"{subject}\n{text}").strip()
+
+    # Redundant UBL transfer notice — its structured twin is ingested instead.
+    if _UBL_DUP_NOTICE_RE.search(text):
+        return None
 
     amounts = _AMOUNT_RE.findall(text)
     if not amounts:

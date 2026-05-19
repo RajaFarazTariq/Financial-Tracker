@@ -17,6 +17,10 @@ class Account(models.Model):
     name = models.CharField(max_length=100)
     kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.CHECKING)
     currency = models.CharField(max_length=3, default="PKR")
+    # Money in the account before the first tracked transaction. Bank alert
+    # emails (e.g. UBL) never state a balance, so the live ``balance`` is
+    # opening_balance + the running sum of transaction deltas.
+    opening_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     # Bank-sync linkage (null for manually created accounts).
     plaid_item = models.ForeignKey(
@@ -92,6 +96,13 @@ class Transaction(models.Model):
     plaid_transaction_id = models.CharField(max_length=128, blank=True, db_index=True)
     # Set for rows ingested from a bank-alert email; dedupes re-scans.
     email_message_id = models.CharField(max_length=255, blank=True, db_index=True)
+    # Bank-reported "Available Balance" as of this transaction, parsed from the
+    # alert email. Authoritative running balance — used to anchor Account.balance
+    # so a missed/duplicate alert can't permanently skew it. Null when the alert
+    # carried no balance line (or for non-email rows).
+    reported_balance = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True
+    )
     pending = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 

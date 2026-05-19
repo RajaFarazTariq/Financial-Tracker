@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import imaplib
 import logging
+from datetime import date
+from decimal import Decimal
 from email import message_from_bytes
 from email.header import decode_header, make_header
 
+from django.db import models
 from django.utils import timezone
 
 from accounts.models import Account, EmailInbox, Transaction
@@ -75,7 +78,34 @@ def _resolve_account(inbox: EmailInbox) -> Account:
     return account
 
 
-def scan_inbox(inbox: EmailInbox) -> dict:
+def recompute_alert_balance(account: Account) -> Decimal:
+    """Recompute ``account.balance`` from scratch: opening + sum of deltas.
+
+    UBL alert emails never state a running balance, so the only correct figure
+    is the user-set ``opening_balance`` plus the signed sum of every (deduped)
+    transaction on the account. Recomputing wholesale — rather than nudging the
+    balance per transaction — is what keeps re-scans idempotent.
+
+    Uses a queryset ``.update()`` so it overwrites, rather than stacks on top
+    of, the per-transaction deltas the live-balance signal also applies.
+    """
+    agg = Transaction.objects.filter(account=account).aggregate(
+        income=models.Sum("amount", filter=models.Q(type=Transaction.Type.INCOME)),
+        expense=models.Sum("amount", filter=models.Q(type=Transaction.Type.EXPENSE)),
+    )
+    delta = (agg["income"] or Decimal("0")) - (agg["expense"] or Decimal("0"))
+    balance = (account.opening_balance or Decimal("0")) + delta
+    Account.objects.filter(pk=account.pk).update(balance=balance)
+    return balance
+
+
+def scan_inbox(inbox: EmailInbox, since: date | None = None) -> dict:
+    """Poll the mailbox and ingest alert emails.
+
+    ``since`` bounds a backfill to alerts on/after that date (server-side IMAP
+    SINCE plus a parsed-date guard). Default None keeps the normal incremental
+    behaviour (everything newer than ``last_seen_uid``).
+    """
     try:
         conn = imaplib.IMAP4_SSL(inbox.imap_host, inbox.imap_port)
     except OSError as exc:
@@ -90,7 +120,11 @@ def scan_inbox(inbox: EmailInbox) -> dict:
             return {"ok": False, "error": inbox.error_message}
 
         conn.select(inbox.folder, readonly=True)
-        typ, data = conn.uid("SEARCH", None, "FROM", inbox.sender_filter)
+        criteria = ["FROM", inbox.sender_filter]
+        if since is not None:
+            # IMAP SINCE wants DD-Mon-YYYY and is inclusive (received date).
+            criteria += ["SINCE", since.strftime("%d-%b-%Y")]
+        typ, data = conn.uid("SEARCH", None, *criteria)
         if typ != "OK":
             _fail(inbox, EmailInbox.Status.ERROR, "IMAP search failed")
             return {"ok": False, "error": inbox.error_message}
@@ -110,6 +144,9 @@ def scan_inbox(inbox: EmailInbox) -> dict:
             subject = _decode(msg.get("Subject"))
             parsed = parse_alert(subject, _body_text(msg))
             if parsed is None:
+                skipped += 1
+                continue
+            if since is not None and parsed.txn_date < since:
                 skipped += 1
                 continue
 
@@ -132,10 +169,14 @@ def scan_inbox(inbox: EmailInbox) -> dict:
                     "description": parsed.description[:255],
                     "date": parsed.txn_date,
                     "notes": note,
+                    "reported_balance": parsed.balance,
                     "pending": not parsed.confident,
                 },
             )
             created += int(was_created)
+
+        # Recompute balance = opening_balance + sum of (deduped) deltas.
+        recompute_alert_balance(account)
 
         inbox.last_seen_uid = max_uid
         inbox.status = EmailInbox.Status.ACTIVE
